@@ -34,3 +34,6 @@ export function validateAssertions(tests: TestCase<Record<string, string | objec
     }
   }
 }
+
+
+export { validateAssertSet };
