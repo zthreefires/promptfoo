@@ -40,3 +40,6 @@ function assert<T extends true>() {}
 assert<AssertEqual<PromptConfig, z.infer<typeof PromptConfigSchema>>>();
 assert<AssertEqual<PromptFunction, z.infer<typeof PromptFunctionSchema>>>();
 assert<AssertEqual<Prompt, z.infer<typeof PromptSchema>>>();
+
+
+export { assert };
