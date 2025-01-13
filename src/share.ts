@@ -194,3 +194,6 @@ export async function createShareableUrl(
 
   return showAuth ? fullUrl : stripAuthFromUrl(fullUrl);
 }
+
+
+export { targetHostCanUseNewResults, sendEvalResults };
