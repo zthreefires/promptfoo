@@ -1,16 +1,11 @@
-import { getUserEmail } from '../src/globalConfig/accounts';
+import { fetchWithProxy } from '../src/fetch';
 import { cloudConfig } from '../src/globalConfig/cloud';
-import logger from '../src/logger';
-import type Eval from '../src/models/eval';
-import { stripAuthFromUrl, createShareableUrl } from '../src/share';
+import { stripAuthFromUrl, targetHostCanUseNewResults, sendEvalResults } from '../src/share';
 
 jest.mock('../src/logger');
 jest.mock('../src/globalConfig/cloud');
 jest.mock('../src/fetch', () => ({
-  fetchWithProxy: jest.fn().mockResolvedValue({
-    ok: true,
-    json: jest.fn().mockResolvedValue({ id: 'mock-eval-id' }),
-  }),
+  fetchWithProxy: jest.fn(),
 }));
 
 jest.mock('../src/globalConfig/accounts', () => ({
@@ -54,66 +49,138 @@ describe('stripAuthFromUrl', () => {
   });
 });
 
-describe('createShareableUrl', () => {
+describe('targetHostCanUseNewResults', () => {
   beforeEach(() => {
     jest.clearAllMocks();
   });
 
-  it('creates correct URL for cloud config and updates author', async () => {
-    jest.mocked(cloudConfig.isEnabled).mockReturnValue(true);
-    jest.mocked(cloudConfig.getAppUrl).mockReturnValue('https://app.example.com');
-    jest.mocked(cloudConfig.getApiHost).mockReturnValue('https://api.example.com');
-    jest.mocked(cloudConfig.getApiKey).mockReturnValue('mock-api-key');
-    jest.mocked(getUserEmail).mockReturnValue('logged-in@example.com');
+  it('returns true when host is healthy and supports version', async () => {
+    jest.mocked(fetchWithProxy).mockResolvedValueOnce({
+      ok: true,
+      json: () => Promise.resolve({ version: '1.0.0' }),
+    } as any);
 
-    const mockEval: Partial<Eval> = {
-      config: {},
-      author: 'original@example.com',
-      useOldResults: jest.fn().mockReturnValue(false),
-      loadResults: jest.fn().mockResolvedValue(undefined),
-      save: jest.fn().mockResolvedValue(undefined),
-    };
-
-    const result = await createShareableUrl(mockEval as Eval);
-
-    expect(result).toBe('https://app.example.com/eval/mock-eval-id');
-    expect(mockEval.author).toBe('logged-in@example.com');
-    expect(mockEval.save).toHaveBeenCalledWith();
+    const result = await targetHostCanUseNewResults('https://api.example.com');
+    expect(result).toBe(true);
+    expect(fetchWithProxy).toHaveBeenCalledWith('https://api.example.com/health', {
+      method: 'GET',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+    });
   });
 
-  it('throws error if cloud config enabled but no user email', async () => {
-    jest.mocked(cloudConfig.isEnabled).mockReturnValue(true);
-    jest.mocked(getUserEmail).mockReturnValue(null);
+  it('returns false when host is not healthy', async () => {
+    jest.mocked(fetchWithProxy).mockResolvedValueOnce({
+      ok: false,
+    } as any);
 
-    const mockEval: Partial<Eval> = {
-      config: {},
-      useOldResults: jest.fn().mockReturnValue(false),
-      loadResults: jest.fn().mockResolvedValue(undefined),
-    };
-
-    await expect(createShareableUrl(mockEval as Eval)).rejects.toThrow('User email is not set');
+    const result = await targetHostCanUseNewResults('https://api.example.com');
+    expect(result).toBe(false);
+    expect(fetchWithProxy).toHaveBeenCalledWith('https://api.example.com/health', {
+      method: 'GET',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+    });
   });
 
-  it('logs warning when changing author in cloud mode', async () => {
-    jest.mocked(cloudConfig.isEnabled).mockReturnValue(true);
-    jest.mocked(cloudConfig.getAppUrl).mockReturnValue('https://app.example.com');
-    jest.mocked(cloudConfig.getApiHost).mockReturnValue('https://api.example.com');
-    jest.mocked(cloudConfig.getApiKey).mockReturnValue('mock-api-key');
-    jest.mocked(getUserEmail).mockReturnValue('new@example.com');
+  it('returns false when version is not supported', async () => {
+    jest.mocked(fetchWithProxy).mockResolvedValueOnce({
+      ok: true,
+      json: () => Promise.resolve({ someOtherField: 'value' }),
+    } as any);
 
-    const mockEval: Partial<Eval> = {
-      config: {},
-      author: 'original@example.com',
-      useOldResults: jest.fn().mockReturnValue(false),
+    const result = await targetHostCanUseNewResults('https://api.example.com');
+    expect(result).toBe(false);
+    expect(fetchWithProxy).toHaveBeenCalledWith('https://api.example.com/health', {
+      method: 'GET',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+    });
+  });
+
+  it('returns false when network error occurs', async () => {
+    jest.mocked(fetchWithProxy).mockRejectedValueOnce(new Error('Network error'));
+
+    const result = await targetHostCanUseNewResults('https://api.example.com').catch(() => false);
+    expect(result).toBe(false);
+    expect(fetchWithProxy).toHaveBeenCalledWith('https://api.example.com/health', {
+      method: 'GET',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+    });
+  });
+});
+
+describe('sendEvalResults', () => {
+  beforeEach(() => {
+    jest.clearAllMocks();
+  });
+
+  it('successfully sends eval results', async () => {
+    const mockEval: any = {
       loadResults: jest.fn().mockResolvedValue(undefined),
-      save: jest.fn().mockResolvedValue(undefined),
     };
 
-    await createShareableUrl(mockEval as Eval);
+    jest.mocked(fetchWithProxy).mockResolvedValueOnce({
+      ok: true,
+      json: () => Promise.resolve({ id: 'test-eval-id' }),
+    } as any);
 
-    expect(mockEval.author).toBe('new@example.com');
-    expect(jest.mocked(logger.warn)).toHaveBeenCalledWith(
-      'Warning: Changing eval author from original@example.com to logged-in user new@example.com',
+    const evalId = await sendEvalResults(mockEval, 'https://api.example.com');
+
+    expect(evalId).toBe('test-eval-id');
+    expect(mockEval.loadResults).toHaveBeenCalledWith();
+    expect(fetchWithProxy).toHaveBeenCalledWith(
+      'https://api.example.com',
+      expect.objectContaining({
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+      }),
+    );
+  });
+
+  it('adds authorization header when cloud config is enabled', async () => {
+    jest.mocked(cloudConfig.isEnabled).mockReturnValue(true);
+    jest.mocked(cloudConfig.getApiKey).mockReturnValue('test-api-key');
+
+    const mockEval: any = {
+      loadResults: jest.fn().mockResolvedValue(undefined),
+    };
+
+    jest.mocked(fetchWithProxy).mockResolvedValueOnce({
+      ok: true,
+      json: () => Promise.resolve({ id: 'test-eval-id' }),
+    } as any);
+
+    await sendEvalResults(mockEval, 'https://api.example.com');
+
+    expect(fetchWithProxy).toHaveBeenCalledWith(
+      'https://api.example.com',
+      expect.objectContaining({
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: 'Bearer test-api-key',
+        },
+      }),
+    );
+  });
+
+  it('throws error when response is not ok', async () => {
+    const mockEval: any = {
+      loadResults: jest.fn().mockResolvedValue(undefined),
+    };
+
+    jest.mocked(fetchWithProxy).mockResolvedValueOnce({
+      ok: false,
+      statusText: 'Bad Request',
+    } as any);
+
+    await expect(sendEvalResults(mockEval, 'https://api.example.com')).rejects.toThrow(
+      'Failed to send eval results: Bad Request',
     );
   });
 });
