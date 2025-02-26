@@ -86,3 +86,6 @@ export default function Logo() {
     </Link>
   );
 }
+
+
+export { LogoWrapper, LogoText, LogoIcon };
